@@ -27,6 +27,7 @@ app.get("/", (req, res) => {
 // ======================
 const client = new MongoClient(process.env.DB_URI);
 
+let db;
 let usersCollection;
 let tasksCollection;
 let paymentsCollection;
@@ -35,51 +36,67 @@ let submissionsCollection;
 async function connectDB() {
   try {
     await client.connect();
-    const db = client.db("Microtask");
+    db = client.db("Microtask");
+
     usersCollection = db.collection("users");
     tasksCollection = db.collection("tasks");
     paymentsCollection = db.collection("payments");
     submissionsCollection = db.collection("submissions");
-    console.log("MongoDB Connected");
+
+    console.log("MongoDB Connected Successfully ");
   } catch (error) {
     console.error("MongoDB Connection Failed:", error);
   }
 }
+
 connectDB();
 
 // ======================
-// JWT Middleware
+// JWT Middleware (Updated for Stability)
 // ======================
 const verifyJWT = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).send({ message: "Unauthorized" });
+  // headers থেকে authorization বা Authorization দুটোই চেক করা ভালো
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "Unauthorized access: No token found" });
   }
 
   const token = authHeader.split(" ")[1];
+
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).send({ message: "Forbidden" });
-    req.user = decoded;
+    if (err) {
+      console.log("JWT Error:", err.message); // এরর কি হচ্ছে কনসোলে দেখার জন্য
+      return res.status(401).send({ message: "Unauthorized access: Invalid token" });
+    }
+
+    req.decoded = decoded; 
     next();
   });
 };
+
 
 //users
 app.post("/users", async (req, res) => {
   try {
     let { name, email, photo, role } = req.body;
 
-    // normalize role (🔥 FIX)
+    // normalize role
     role = role.toLowerCase();
 
+    // check existing user
     const existingUser = await usersCollection.findOne({ email });
+
     if (existingUser) {
-      return res.send({ success: false, message: "User already exists" });
+      return res.send({
+        success: true,
+        user: existingUser,
+        message: "User already exists"
+      });
     }
 
-    let coin = 0;
-    if (role === "worker") coin = 10;
-    if (role === "buyer") coin = 50;
+    // coin logic
+    const coin = role === "worker" ? 10 : 50;
 
     const user = {
       name,
@@ -91,39 +108,64 @@ app.post("/users", async (req, res) => {
     };
 
     await usersCollection.insertOne(user);
-    res.send({ success: true, user });
+
+    res.send({
+      success: true,
+      user
+    });
+
   } catch (error) {
-    console.error("User creation error:", error);
+    console.error("Create user error:", error);
     res.status(500).send({ success: false });
   }
 });
-
-// Get user info
+// user info
 app.get("/user/info", async (req, res) => {
   const email = req.query.email;
-  const user = await db.collection("users").findOne({ email });
-  if (!user) return res.status(404).send({ message: "User not found" });
+
+  if (!email) {
+    return res.status(400).send({ message: "Email required" });
+  }
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
   res.send({
-    name: user.name,
-    email: user.email,
-    photo: user.photo,
+    coin: user.coin,
     role: user.role,
-    coin: user.coin || 0
   });
 });
 
+app.get("/users/:email", verifyJWT, async (req, res) => {
 
+  const email = req.params.email;
 
-// ======================
-// JWT
-// ======================
+  if (email !== req.decoded.email) {
+    return res.status(403).send({ message: "Forbidden" });
+  }
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
+  res.send(user);
+});
+
+//jwt
 app.post("/jwt", (req, res) => {
   const user = req.body;
-  const token = jwt.sign(user, process.env.JWT_SECRET, {
-    expiresIn: "7d",
+  // payload এ শুধু ইমেইল রাখা ভালো
+  const token = jwt.sign({ email: user.email }, process.env.JWT_SECRET, {
+     expiresIn: "365d", 
   });
   res.send({ token });
 });
+
 
 // ======================
 // Buyer Stats
@@ -206,7 +248,7 @@ app.patch("/submissions/reject/:id", verifyJWT, async (req, res) => {
 
 
 // Worker Stats//##
-app.get("/worker/stats", async (req, res) => {
+app.get("/worker/stats", verifyJWT, async (req, res) => {
   const email = req.query.email;
   const submissions = await db
     .collection("submissions")
@@ -225,13 +267,13 @@ app.get("/worker/stats", async (req, res) => {
 });
 
 // Tasks (available)
-app.get("/tasks/available", async (req, res) => {
+app.get("/tasks/available", verifyJWT, async (req, res) => {
   const tasks = await db.collection("tasks").find({ required_workers: { $gt: 0 } }).toArray();
   res.send(tasks);
 });
 
 // Submit task
-app.post("/submissions", async (req, res) => {
+app.post("/submissions",verifyJWT, async (req, res) => {
   const sub = req.body;
   await db.collection("submissions").insertOne(sub);
 
@@ -245,20 +287,20 @@ app.post("/submissions", async (req, res) => {
 });
 
 // My submissions
-app.get("/submissions/my", async (req, res) => {
+app.get("/submissions/my", verifyJWT, async (req, res) => {
   const email = req.query.email;
   const subs = await db.collection("submissions").find({ worker_email: email }).toArray();
   res.send(subs);
 });
 
 // Withdrawals
-app.get("/worker/coin", async (req, res) => {
+app.get("/worker/coin", verifyJWT, async (req, res) => {
   const email = req.query.email;
   const user = await db.collection("users").findOne({ email });
   res.send({ coin: user?.coin || 0 });
 });
 
-app.post("/withdrawals", async (req, res) => {
+app.post("/withdrawals",verifyJWT, async (req, res) => {
   const data = req.body;
   await db.collection("withdrawals").insertOne(data);
 
