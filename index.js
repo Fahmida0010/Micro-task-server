@@ -413,7 +413,22 @@ app.get("/worker-stats/:email", async (req, res) => {
   }
 });
 
-  
+  //my-submissions
+app.get("/my-submissions/:email", async (req, res) => {
+  try {
+    const email = req.params.email;
+
+    const submissions = await submissionsCollection
+      .find({ worker_email: email })
+      .sort({ date: -1 }) // latest first
+      .toArray();
+
+    res.send(submissions);
+
+  } catch (error) {
+    res.status(500).send({ message: "Failed to fetch submissions", error });
+  }
+});
 
 
 
