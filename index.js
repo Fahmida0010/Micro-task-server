@@ -360,6 +360,26 @@ app.post("/tasks", verifyJWT, async (req, res) => {
   });
 
 
+  // ======================
+  // GET /payments/:buyerId
+  // ======================
+  app.get("/payments/:buyerId", verifyJWT, async (req, res) => {
+    try {
+      const buyerId = req.params.buyerId;
+
+      // check JWT user matches param
+      const payments = await paymentsCollection
+        .find({ buyerId: new ObjectId(buyerId) })
+        .sort({ date: -1 })
+        .toArray();
+
+      res.json(payments);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to fetch payments" });
+    }
+  });
+};
 
 
 
