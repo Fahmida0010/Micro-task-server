@@ -1,10 +1,15 @@
 const express = require("express");
+const Stripe = require("stripe");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
 
 const app = express();
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const CLIENT_URL = process.env.CLIENT_URL;
+
 
 //middleware
 app.use(cors({
@@ -244,44 +249,54 @@ app.post("/jwt", (req, res) => {
       res.status(500).json({ message: "Failed to reject submission" });
     }
   });
-
-
-// Add this inside your Express app, after connecting to MongoDB//
+  
+ 
+// AddTask API
 app.post("/tasks", verifyJWT, async (req, res) => {
-  // console.log(req.body)
   try {
     const task = req.body;
-    const buyerId = task.buyerId;
+    const buyerEmail = task.Buyer_email;
 
-    // 1️⃣ Find the buyer in DB
-    const buyer = await usersCollection.findOne({ _id: new ObjectId(buyerId) });
-    if (!buyer) return res.status(404).json({ message: "Buyer not found" });
+    // 1️⃣ Find buyer by email
+    const buyer = await usersCollection.findOne({ email: buyerEmail });
+    if (!buyer) {
+      return res.status(404).json({ message: "Buyer not found" });
+    }
 
     // 2️⃣ Calculate total payable amount
     const totalPay = task.required_workers * task.payable_amount;
 
-    // 3️⃣ Check if buyer has enough coins
+    // 3️⃣ Check buyer coin balance
     if (totalPay > buyer.coin) {
+      // Don't send alert or navigate here
+      // Just return status 400 + message
       return res.status(400).json({ message: "Not enough coins" });
     }
 
-    // 4️⃣ Reduce buyer coins
+    // console.log("Buyer email:", buyerEmail);
+
+    // 4️⃣ Deduct coins from buyer
     await usersCollection.updateOne(
-      { _id: new ObjectId(buyerId) },
-      { $inc: {coin: -totalPay } }
+      { email:buyerEmail},
+      { $inc: { coin: -totalPay } }
     );
 
-    // 5️⃣ Save the task in tasks collection
+    // 5️⃣ Save task
     const result = await tasksCollection.insertOne({
       ...task,
       totalPay,
+      status: "active",
       createdAt: new Date(),
     });
 
-    // 6️⃣ Respond success
-    res.status(201).json({ message: "Task added successfully!", taskId: result.insertedId });
-  } catch (err) {
-    console.error(err);
+    // 6️⃣ Success response
+    res.status(201).json({
+      message: "Task added successfully!",
+      taskId: result.insertedId,
+    });
+
+  } catch (error) {
+    console.error("ADD TASK ERROR:", error);
     res.status(500).json({ message: "Failed to add task!" });
   }
 });
@@ -308,7 +323,7 @@ app.post("/tasks", verifyJWT, async (req, res) => {
   });
 
   // ======================
-  // DELETE /tasks/:id
+  // DELETE /mytasks/:id
   // ======================
   app.delete("/tasks/:id", verifyJWT, async (req, res) => {
     try {
@@ -361,25 +376,57 @@ app.post("/tasks", verifyJWT, async (req, res) => {
   });
 
 
-  // ======================
-  // GET /payments/:buyerId
-  // ======================
-  app.get("/payments/:buyerId", verifyJWT, async (req, res) => {
-    try {
-      const buyerId = req.params.buyerId;
+ 
 
-      // check JWT user matches param
-      const payments = await paymentsCollection
-        .find({ buyerId: new ObjectId(buyerId) })
-        .sort({ date: -1 })
-        .toArray();
+// ================= CREATE CHECKOUT SESSION ==================
+app.post("/create-checkout-session", verifyJWT, async (req, res) => {
+  const { userId, coin, price } = req.body;
 
-      res.json(payments);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ message: "Failed to fetch payments" });
-    }
-  });
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: `${coin} Coins Package`,
+            },
+            unit_amount: price * 100, // cents
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${CLIENT_URL}/payment-success?userId=${userId}&coin=${coin}`,
+      cancel_url: `${CLIENT_URL}/payment-failed`,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Stripe session creation failed" });
+  }
+});
+
+// ================= PATCH USER COINS ==================
+// Optional: already handled in PaymentSuccess page
+app.patch("/users/:id/coins", verifyJWT, async (req, res) => {
+  const userId = req.params.id;
+  const { coins } = req.body;
+
+  try {
+    const result = await usersCollection.updateOne(
+      { _id: new ObjectId(userId) },
+      { $inc: { coin: Number(coins) } }
+    );
+
+    res.json({ success: true, modifiedCount: result.modifiedCount });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update coins" });
+  }
+});
 
    //workerhome//
 app.get("/worker-stats/:email", async (req, res) => {
