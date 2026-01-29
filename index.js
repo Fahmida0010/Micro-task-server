@@ -430,8 +430,70 @@ app.get("/my-submissions/:email", async (req, res) => {
   }
 });
 
+  //worker coin get api//
+app.get("/worker-coin/:email", async (req, res) => {
+  try {
+    const email = req.params.email;
 
+    const worker = await usersCollection.findOne({ email });
 
+    res.send({
+      coin: worker?.coin || 0
+    });
+
+  } catch (error) {
+    res.status(500).send({ message: "Failed to get coin", error });
+  }
+});
+  //worker coin withdrawls //
+app.post("/withdraw", async (req, res) => {
+  try {
+    const withdrawData = req.body;
+
+    // save withdraw request
+    await withdrawalsCollection.insertOne(withdrawData);
+
+    // decrease worker coin
+    await usersCollection.updateOne(
+      { email: withdrawData.worker_email },
+      { $inc: { coin: -withdrawData.withdrawal_coin } }
+    );
+
+    res.send({ message: "Withdrawal requested successfully" });
+
+  } catch (error) {
+    res.status(500).send({ message: "Withdraw failed", error });
+  }
+});
+  //tasklist api//
+app.get("/tasks", async (req, res) => {
+  try {
+    const tasks = await tasksCollection.find({ status: "active" }).toArray();
+    res.send(tasks);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load tasks", error });
+  }
+});
+ //tasklist post api//
+app.post("/task-submit", async (req, res) => {
+  try {
+    const submission = req.body;
+
+    // save submission
+    await submissionsCollection.insertOne(submission);
+
+    // reduce required workers count (optional but pro)
+    await tasksCollection.updateOne(
+      { _id: new ObjectId(submission.task_id) },
+      { $inc: { required_workers: -1 } }
+    );
+
+    res.send({ message: "Task submitted successfully" });
+
+  } catch (error) {
+    res.status(500).send({ message: "Submission failed", error });
+  }
+});
 
 
 
