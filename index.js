@@ -248,6 +248,7 @@ app.post("/jwt", (req, res) => {
 
 // Add this inside your Express app, after connecting to MongoDB//
 app.post("/tasks", verifyJWT, async (req, res) => {
+  // console.log(req.body)
   try {
     const task = req.body;
     const buyerId = task.buyerId;
@@ -379,9 +380,40 @@ app.post("/tasks", verifyJWT, async (req, res) => {
       res.status(500).json({ message: "Failed to fetch payments" });
     }
   });
-};
 
+   //workerhome//
+app.get("/worker-stats/:email", async (req, res) => {
+  try {
+    const email = req.params.email;
 
+    // All submissions by this worker
+    const submissions = await submissionsCollection.find({ worker_email: email }).toArray();
+
+    // Approved submissions
+    const approved = submissions.filter(sub => sub.status === "approved");
+
+    // Pending submissions
+    const pending = submissions.filter(sub => sub.status === "pending");
+
+    // Total earnings
+    const totalEarning = approved.reduce(
+      (sum, item) => sum + Number(item.payable_amount),
+      0
+    );
+
+    res.send({
+      totalSubmissions: submissions.length,
+      totalPending: pending.length,
+      totalEarning,
+      approvedSubmissions: approved
+    });
+
+  } catch (error) {
+    res.status(500).send({ message: "Server error", error });
+  }
+});
+
+  
 
 
 
