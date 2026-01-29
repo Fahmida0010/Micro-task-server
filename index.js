@@ -6,9 +6,7 @@ require("dotenv").config();
 
 const app = express();
 
-// ======================
-// Middlewares
-// ======================
+//middleware
 app.use(cors({
   origin: "http://localhost:5173",
   credentials: true,
@@ -51,11 +49,9 @@ async function connectDB() {
 
 connectDB();
 
-// ======================
+
 // JWT Middleware (Updated for Stability)
-// ======================
 const verifyJWT = (req, res, next) => {
-  // headers থেকে authorization বা Authorization দুটোই চেক করা ভালো
   const authHeader = req.headers.authorization || req.headers.Authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -74,7 +70,6 @@ const verifyJWT = (req, res, next) => {
     next();
   });
 };
-
 
 //users
 app.post("/users", async (req, res) => {
@@ -159,159 +154,218 @@ app.get("/users/:email", verifyJWT, async (req, res) => {
 //jwt
 app.post("/jwt", (req, res) => {
   const user = req.body;
-  // payload এ শুধু ইমেইল রাখা ভালো
-  const token = jwt.sign({ email: user.email }, process.env.JWT_SECRET, {
+    const token = jwt.sign({ email: user.email }, process.env.JWT_SECRET, {
      expiresIn: "365d", 
   });
   res.send({ token });
 });
 
+  // ======================
+  // GET /buyer/stats
+  // ======================
+  app.get("/buyer/stats", verifyJWT, async (req, res) => {
+    try {
+      const buyerEmail = req.decoded.email;
+      const buyer = await usersCollection.findOne({ email: buyerEmail });
+      if (!buyer) return res.status(404).json({ message: "Buyer not found" });
 
-// ======================
-// Buyer Stats
-// ======================
-app.get("/buyer/stats", verifyJWT, async (req, res) => {
-  const totalTasks = await tasksCollection.countDocuments();
-  const payments = await paymentsCollection.find().toArray();
-  const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+      const totalTasks = await tasksCollection.countDocuments({ buyerId: buyer._id.toString() });
+      const pendingWorkers = await submissionsCollection.countDocuments({ buyerId: buyer._id.toString(), status: "pending" });
 
-  res.send({
-    totalTasks,
-    pendingWorkers: 10,
-    totalPaid,
+      const totalPaidAgg = await submissionsCollection.aggregate([
+        { $match: { buyerId: buyer._id.toString(), status: "approved" } },
+        { $group: { _id: null, total: { $sum: "$payable_amount" } } }
+      ]).toArray();
+
+      const totalPaid = totalPaidAgg[0]?.total || 0;
+
+      res.json({ totalTasks, pendingWorkers, totalPaid });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to fetch stats" });
+    }
   });
-});
 
-// ======================
-// Tasks
-// ======================
+  // ======================
+  // GET /submissions/pending
+  // ======================
+  app.get("/submissions/pending", verifyJWT, async (req, res) => {
+    try {
+      const buyerEmail = req.decoded.email;
+      const buyer = await usersCollection.findOne({ email: buyerEmail });
+      if (!buyer) return res.status(404).json({ message: "Buyer not found" });
+
+      const pendingSubs = await submissionsCollection.find({ buyerId: buyer._id.toString(), status: "pending" }).toArray();
+      res.json(pendingSubs);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to fetch pending submissions" });
+    }
+  });
+
+  // ======================
+  // PATCH /submissions/approve/:id
+  // ======================
+  app.patch("/submissions/approve/:id", verifyJWT, async (req, res) => {
+    try {
+      const subId = req.params.id;
+      const submission = await submissionsCollection.findOne({ _id: new ObjectId(subId) });
+      if (!submission) return res.status(404).json({ message: "Submission not found" });
+
+      await submissionsCollection.updateOne(
+        { _id: new ObjectId(subId) },
+        { $set: { status: "approved", approvedAt: new Date() } }
+      );
+
+      res.json({ message: "Submission approved successfully" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to approve submission" });
+    }
+  });
+
+  // ======================
+  // PATCH /submissions/reject/:id
+  // ======================
+  app.patch("/submissions/reject/:id", verifyJWT, async (req, res) => {
+    try {
+      const subId = req.params.id;
+      const submission = await submissionsCollection.findOne({ _id: new ObjectId(subId) });
+      if (!submission) return res.status(404).json({ message: "Submission not found" });
+
+      await submissionsCollection.updateOne(
+        { _id: new ObjectId(subId) },
+        { $set: { status: "rejected", rejectedAt: new Date() } }
+      );
+
+      res.json({ message: "Submission rejected successfully" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to reject submission" });
+    }
+  });
+
+
+// Add this inside your Express app, after connecting to MongoDB//
 app.post("/tasks", verifyJWT, async (req, res) => {
-  const task = { ...req.body, createdAt: new Date() };
-  await tasksCollection.insertOne(task);
-  res.send({ success: true });
-});
+  try {
+    const task = req.body;
+    const buyerId = task.buyerId;
 
-app.get("/tasks/my", verifyJWT, async (req, res) => {
-  const tasks = await tasksCollection.find().toArray();
-  res.send(tasks);
-});
+    // 1️⃣ Find the buyer in DB
+    const buyer = await usersCollection.findOne({ _id: new ObjectId(buyerId) });
+    if (!buyer) return res.status(404).json({ message: "Buyer not found" });
 
-app.delete("/tasks/:id", verifyJWT, async (req, res) => {
-  await tasksCollection.deleteOne({ _id: new ObjectId(req.params.id) });
-  res.send({ success: true });
-});
+    // 2️⃣ Calculate total payable amount
+    const totalPay = task.required_workers * task.payable_amount;
 
-// ======================
-// Payments
-// ======================
-app.post("/payments", verifyJWT, async (req, res) => {
-  const payment = {
-    ...req.body,
-    amount: req.body.price,
-    date: new Date(),
-  };
-  await paymentsCollection.insertOne(payment);
-  res.send({ success: true });
-});
+    // 3️⃣ Check if buyer has enough coins
+    if (totalPay > buyer.coin) {
+      return res.status(400).json({ message: "Not enough coins" });
+    }
 
-app.get("/payments", verifyJWT, async (req, res) => {
-  const payments = await paymentsCollection.find().toArray();
-  res.send(payments);
-});
+    // 4️⃣ Reduce buyer coins
+    await usersCollection.updateOne(
+      { _id: new ObjectId(buyerId) },
+      { $inc: {coin: -totalPay } }
+    );
 
-// ======================
-// Submissions
-// ======================
-app.get("/submissions/pending", verifyJWT, async (req, res) => {
-  const submissions = await submissionsCollection
-    .find({ status: "pending" })
-    .toArray();
-  res.send(submissions);
-});
+    // 5️⃣ Save the task in tasks collection
+    const result = await tasksCollection.insertOne({
+      ...task,
+      totalPay,
+      createdAt: new Date(),
+    });
 
-app.patch("/submissions/approve/:id", verifyJWT, async (req, res) => {
-  await submissionsCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { status: "approved" } }
-  );
-  res.send({ success: true });
-});
-
-app.patch("/submissions/reject/:id", verifyJWT, async (req, res) => {
-  await submissionsCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { status: "rejected" } }
-  );
-  res.send({ success: true });
+    // 6️⃣ Respond success
+    res.status(201).json({ message: "Task added successfully!", taskId: result.insertedId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to add task!" });
+  }
 });
 
 
+  // ======================
+  // GET /tasks/my
+  // ======================
+  app.get("/tasks/my", verifyJWT, async (req, res) => {
+    try {
+      const buyerEmail = req.decoded.email;
+      const buyer = await usersCollection.findOne({ email: buyerEmail });
+      if (!buyer) return res.status(404).json({ message: "Buyer not found" });
 
-// Worker Stats//##
-app.get("/worker/stats", verifyJWT, async (req, res) => {
-  const email = req.query.email;
-  const submissions = await db
-    .collection("submissions")
-    .find({ worker_email: email })
-    .toArray();
+      const myTasks = await tasksCollection
+        .find({ buyerId: buyer._id.toString() })
+        .toArray();
 
-  const totalSubmissions = submissions.length;
-  const totalPending = submissions.filter(s => s.status === "pending").length;
-  const totalEarning = submissions
-    .filter(s => s.status === "approved")
-    .reduce((a, b) => a + b.payable_amount, 0);
+      res.json(myTasks);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to fetch tasks" });
+    }
+  });
 
-  const approvedSubmissions = submissions.filter(s => s.status === "approved");
+  // ======================
+  // DELETE /tasks/:id
+  // ======================
+  app.delete("/tasks/:id", verifyJWT, async (req, res) => {
+    try {
+      const taskId = req.params.id;
+      const buyerEmail = req.decoded.email;
+      const buyer = await usersCollection.findOne({ email: buyerEmail });
+      if (!buyer) return res.status(404).json({ message: "Buyer not found" });
 
-  res.send({ totalSubmissions, totalPending, totalEarning, approvedSubmissions });
-});
+      const task = await tasksCollection.findOne({ _id: new ObjectId(taskId) });
+      if (!task) return res.status(404).json({ message: "Task not found" });
 
-// Tasks (available)
-app.get("/tasks/available", verifyJWT, async (req, res) => {
-  const tasks = await db.collection("tasks").find({ required_workers: { $gt: 0 } }).toArray();
-  res.send(tasks);
-});
+      if (task.buyerId !== buyer._id.toString())
+        return res.status(403).json({ message: "Forbidden" });
 
-// Submit task
-app.post("/submissions",verifyJWT, async (req, res) => {
-  const sub = req.body;
-  await db.collection("submissions").insertOne(sub);
+      await tasksCollection.deleteOne({ _id: new ObjectId(taskId) });
+      res.json({ message: "Task deleted successfully" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to delete task" });
+    }
+  });
 
-  // reduce required_workers
-  await db.collection("tasks").updateOne(
-    { _id: ObjectId(sub.task_id) },
-    { $inc: { required_workers: -1 } }
-  );
 
-  res.send({ success: true });
-});
 
-// My submissions
-app.get("/submissions/my", verifyJWT, async (req, res) => {
-  const email = req.query.email;
-  const subs = await db.collection("submissions").find({ worker_email: email }).toArray();
-  res.send(subs);
-});
+  // ======================
+  // PATCH /users/:id/coins
+  // ======================
+  app.patch("/users/:id/coins", verifyJWT, async (req, res) => {
+    try {
+      const userId = req.params.id;
+      const { coins } = req.body;
 
-// Withdrawals
-app.get("/worker/coin", verifyJWT, async (req, res) => {
-  const email = req.query.email;
-  const user = await db.collection("users").findOne({ email });
-  res.send({ coin: user?.coin || 0 });
-});
+      // check JWT user matches param
+      const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+      if (!user) return res.status(404).json({ message: "User not found" });
+      if (user.email !== req.decoded.email)
+        return res.status(403).json({ message: "Forbidden" });
 
-app.post("/withdrawals",verifyJWT, async (req, res) => {
-  const data = req.body;
-  await db.collection("withdrawals").insertOne(data);
+      // add coins
+      await usersCollection.updateOne(
+        { _id: new ObjectId(userId) },
+        { $inc: { coin: coins } }
+      );
 
-  // decrease user coin
-  await db.collection("users").updateOne(
-    { email: data.worker_email },
-    { $inc: { coin: -data.withdrawal_coin } }
-  );
+      res.json({ message: `Successfully added ${coins} coins` });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to add coins" });
+    }
+  });
 
-  res.send({ success: true });
-});
+
+
+
+
+
+
+
 
 
 // ======================
