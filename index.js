@@ -239,23 +239,45 @@ app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
 });
 
   // PATCH /submissions/approve/:id
-  app.patch("/submissions/approve/:id", verifyJWT, async (req, res) => {
-    try {
-      const subId = req.params.id;
-      const submission = await submissionsCollection.findOne({ _id: new ObjectId(subId) });
-      if (!submission) return res.status(404).json({ message: "Submission not found" });
+   app.patch("/submissions/approve/:id", verifyJWT, async (req, res) => {
+  try {
+    const subId = req.params.id;
 
-      await submissionsCollection.updateOne(
-        { _id: new ObjectId(subId) },
-        { $set: { status: "approved", approvedAt: new Date() } }
-      );
+    const submission = await submissionsCollection.findOne({ 
+      _id: new ObjectId(subId) 
+    });
 
-      res.json({ message: "Submission approved successfully" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ message: "Failed to approve submission" });
+    if (!submission) {
+      return res.status(404).json({ message: "Submission not found" });
     }
-  });
+
+    // 1️⃣ Approve submission
+    await submissionsCollection.updateOne(
+      { _id: new ObjectId(subId) },
+      { 
+        $set: { 
+          status: "approved", 
+          approvedAt: new Date() 
+        } 
+      }
+    );
+
+    // 2️⃣ Add coin to worker
+    await usersCollection.updateOne(
+      { email: submission.worker_email },   // worker email from submission
+      { $inc: { coin: submission.payable_amount } } // increment coin
+    );
+
+    res.json({ 
+      message: "Submission approved & worker paid successfully" 
+    });
+
+  } catch (err) {
+    console.error("Approve error:", err);
+    res.status(500).json({ message: "Failed to approve submission" });
+  }
+});
+
 
   // PATCH /submissions/reject/:id
   app.patch("/submissions/reject/:id", verifyJWT, async (req, res) => {
@@ -328,47 +350,70 @@ app.post("/tasks", verifyJWT, async (req, res) => {
 });
 
 
-  // GET /tasks/my/buyer 
+// GET MY TASKS DESCENDING
 app.get("/tasks/my", verifyJWT, async (req, res) => {
   try {
-    const buyerEmail = req.decoded.email;
+    const email = req.decoded.email;
 
-    const myTasks = await tasksCollection
-      .find({ Buyer_email: buyerEmail })
+    const tasks = await tasksCollection
+      .find({ Buyer_email: email })
+      .sort({ createdAt: -1 })
       .toArray();
 
-    res.json(myTasks);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to fetch tasks" });
+    res.send(tasks);
+  } catch {
+    res.status(500).send({ message: "Failed to fetch" });
   }
 });
 
-  // DELETE /mytasks/:id/buyer
+
+// UPDATE myTASK
+app.patch("/tasks/:id", verifyJWT, async (req, res) => {
+  const id = req.params.id;
+  const email = req.decoded.email;
+
+  const { title, TaskDetail, submission_Details } = req.body;
+
+  const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
+
+  if (!task) return res.status(404).send({ message: "Not found" });
+  if (task.Buyer_email !== email) return res.status(403).send({ message: "Forbidden" });
+
+  const result = await tasksCollection.updateOne(
+    { _id: new ObjectId(id) },
+    {
+      $set: {
+        title,
+        TaskDetail,
+        submission_Details
+      }
+    }
+  );
+
+  res.send(result);
+});
+
+
+// DELETE myTASK + REFILL COIN
 app.delete("/tasks/:id", verifyJWT, async (req, res) => {
-  try {
-    const taskId = req.params.id;
-    const buyerEmail = req.decoded.email;
+  const id = req.params.id;
+  const email = req.decoded.email;
 
-    const task = await tasksCollection.findOne({
-      _id: new ObjectId(taskId)
-    });
+  const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
 
-    if (!task) {
-      return res.status(404).json({ message: "Task not found" });
-    }
-    if (task.Buyer_email !== buyerEmail) {
-      return res.status(403).json({ message: "Forbidden" });
-    }
-
-    await tasksCollection.deleteOne({ _id: new ObjectId(taskId) });
-
-    res.json({ message: "Task deleted successfully" });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to delete task" });
+  if (!task) return res.status(404).send({ message: "Not found" });
+  if (task.Buyer_email !== email) return res.status(403).send({ message: "Forbidden" });
+  const refillAmount = task.required_workers * task.payable_amount;
+  if (task.status !== "completed") {
+    await usersCollection.updateOne(
+      { email },
+      { $inc: { coins: refillAmount } }
+    );
   }
+
+  await tasksCollection.deleteOne({ _id: new ObjectId(id) });
+
+  res.send({ success: true, refillAmount });
 });
 
 
@@ -583,27 +628,11 @@ app.post("/task-submit", async (req, res) => {
 });
 
 
-//  //my-submissions
-// app.get("/my-submissions/:email", async (req, res) => {
-//   try {
-//     const email = req.params.email;
-
-//     const submissions = await submissionsCollection
-//       .find({ worker_email: email })
-//       .sort({ current_date: -1 }) 
-//       .toArray();
-
-//     res.send(submissions);
-
-//   } catch (error) {
-//     res.status(500).send({ message: "Failed to fetch submissions", error });
-//   }
-// });
 // GET submissions by worker email with pagination
 app.get("/my-submissions/:email", async (req, res) => {
   const workerEmail = req.params.email;
-  const page = parseInt(req.query.page) || 1; // default page 1
-  const limit = parseInt(req.query.limit) || 5; // default 5 per page
+  const page = parseInt(req.query.page) || 1; 
+  const limit = parseInt(req.query.limit) || 5;
   const skip = (page - 1) * limit;
 
   try {
