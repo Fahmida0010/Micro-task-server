@@ -5,7 +5,6 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
-
 const app = express();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -36,6 +35,7 @@ let usersCollection;
 let tasksCollection;
 let paymentsCollection;
 let submissionsCollection;
+let withdrawalsCollection;
 
 async function connectDB() {
   try {
@@ -47,6 +47,7 @@ async function connectDB() {
     paymentsCollection = db.collection("payments");
     submissionsCollection = db.collection("submissions");
     withdrawalsCollection = db.collection("withdrawals");
+    notificationsCollection = db.collection("notifications");
 
 
     console.log("MongoDB Connected Successfully ");
@@ -78,6 +79,70 @@ const verifyJWT = (req, res, next) => {
     next();
   });
 };
+
+// 🔹 Check Admin
+const verifyAdmin = async (req, res, next) => {
+  const email = req.decoded.email;
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ message: "Admin access only" });
+  }
+
+  next();
+};
+
+// 🔹 Check Buyer
+const verifyBuyer = async (req, res, next) => {
+  const email = req.decoded.email;
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user || user.role !== "buyer") {
+    return res.status(403).send({ message: "Buyer access only" });
+  }
+
+  next();
+};
+
+// 🔹 Check Worker
+const verifyWorker = async (req, res, next) => {
+  const email = req.decoded.email;
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user || user.role !== "worker") {
+    return res.status(403).send({ message: "Worker access only" });
+  }
+
+  next();
+};
+
+ //notifications
+app.post("/notifications", async (req, res) => {
+  try {
+    const notification = req.body;
+    const result = await notificationsCollection.insertOne(notification);
+    res.send(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Notification failed" });
+  }
+});
+
+
+//notification get api
+app.get("/notifications/:email", async (req, res) => {
+  const email = req.params.email;
+
+  const result = await notificationsCollection
+    .find({userEmail: email })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send(result);
+});
 
 //users
 app.post("/users", async (req, res) => {
@@ -172,7 +237,7 @@ app.post("/jwt", (req, res) => {
 // ======================
 // GET /buyer/stats/:email
 // ======================
-app.get("/buyer/stats/:email", verifyJWT, async (req, res) => {
+app.get("/buyer/stats/:email", verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const requestedEmail = req.params.email;
     const decodedEmail = req.decoded.email;
@@ -216,8 +281,9 @@ app.get("/buyer/stats/:email", verifyJWT, async (req, res) => {
   }
 });
 
+
 // Buyer all submissions (pending + approved + rejected)
-app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
+app.get("/submissions/buyer/:email", verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const requestedEmail = req.params.email;
     const decodedEmail = req.decoded.email;
@@ -239,7 +305,7 @@ app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
 });
 
   // PATCH /submissions/approve/:id
-   app.patch("/submissions/approve/:id", verifyJWT, async (req, res) => {
+   app.patch("/submissions/approve/:id", verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const subId = req.params.id;
 
@@ -264,9 +330,17 @@ app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
 
     // 2️⃣ Add coin to worker
     await usersCollection.updateOne(
-      { email: submission.worker_email },   // worker email from submission
-      { $inc: { coin: submission.payable_amount } } // increment coin
+      { email: submission.email },  
+      { $inc: { coin: submission.payable_amount } }
     );
+
+      // ✅ 3️⃣ ADD NOTIFICATION HERE
+    await notificationsCollection.insertOne({
+      message: `You have earned ${submission.payable_amount} from ${submission.Buyer_name} for completing ${submission.task_title}`,
+      toEmail: submission.worker_email,
+      actionRoute: "/dashboard/worker-home",
+      time: new Date(),
+    });
 
     res.json({ 
       message: "Submission approved & worker paid successfully" 
@@ -278,9 +352,8 @@ app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
   }
 });
 
-
   // PATCH /submissions/reject/:id
-  app.patch("/submissions/reject/:id", verifyJWT, async (req, res) => {
+  app.patch("/submissions/reject/:id",  verifyJWT, verifyBuyer, async (req, res) => {
     try {
       const subId = req.params.id;
       const submission = await submissionsCollection.findOne({ _id: new ObjectId(subId) });
@@ -291,6 +364,14 @@ app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
         { $set: { status: "rejected", rejectedAt: new Date() } }
       );
 
+        // ✅ ADD NOTIFICATION HERE
+    await notificationsCollection.insertOne({
+      message: `Your submission for ${submission.task_title} was rejected by ${submission.Buyer_name}`,
+      toEmail: submission.worker_email,
+      actionRoute: "/dashboard/worker-home",
+      time: new Date(),
+    });
+
       res.json({ message: "Submission rejected successfully" });
     } catch (err) {
       console.error(err);
@@ -300,44 +381,32 @@ app.get("/submissions/buyer/:email", verifyJWT, async (req, res) => {
 
 
 // AddTask API
-app.post("/tasks", verifyJWT, async (req, res) => {
+app.post("/tasks",  verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const task = req.body;
     const buyerEmail = task.Buyer_email;
 
-    // 1️⃣ Find buyer by email
     const buyer = await usersCollection.findOne({ email: buyerEmail });
     if (!buyer) {
       return res.status(404).json({ message: "Buyer not found" });
     }
 
-    // 2️⃣ Calculate total payable amount
     const totalPay = task.required_workers * task.payable_amount;
-
-    // 3️⃣ Check buyer coin balance
     if (totalPay > buyer.coin) {
-      // Don't send alert or navigate here
-      // Just return status 400 + message
       return res.status(400).json({ message: "Not enough coins,Purchase coins!" });
     }
-
-    // console.log("Buyer email:", buyerEmail);
-
-    // 4️⃣ Deduct coins from buyer
     await usersCollection.updateOne(
       { email:buyerEmail},
       { $inc: { coin: -totalPay } }
     );
 
-    // 5️⃣ Save task
+    
     const result = await tasksCollection.insertOne({
       ...task,
       totalPay,
       status: "active",
       createdAt: new Date(),
     });
-
-    // 6️⃣ Success response
     res.status(201).json({
       message: "Task added successfully!",
       taskId: result.insertedId,
@@ -351,7 +420,7 @@ app.post("/tasks", verifyJWT, async (req, res) => {
 
 
 // GET MY TASKS DESCENDING
-app.get("/tasks/my", verifyJWT, async (req, res) => {
+app.get("/tasks/my",  verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const email = req.decoded.email;
 
@@ -417,77 +486,117 @@ app.delete("/tasks/:id", verifyJWT, async (req, res) => {
 });
 
 
-
-  // ================= CREATE CHECKOUT SESSION ==================
-app.post("/create-checkout-session", verifyJWT, async (req, res) => {
-  const { userEmail, coin, price } = req.body;
-
+app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
   try {
+    const {
+      email,
+      worker_name,
+      withdrawal_coin,
+      payment_system,
+      account_number
+    } = req.body;
+
+    if (!email || !withdrawal_coin) {
+      return res.status(400).send({ message: "Missing required fields" });
+    }
+
+    if (withdrawal_coin < 200) {
+      return res.status(400).send({
+        message: "Minimum 200 coins required to withdraw"
+      });
+    }
+
+    const user = await usersCollection.findOne({ email });
+
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    if (withdrawal_coin > user.coin) {
+      return res.status(400).send({ message: "Insufficient coin" });
+    }
+
+    const withdrawal_amount = withdrawal_coin / 20;
+
+    const withdrawData = {
+      worker_email: email,
+      worker_name,
+      withdrawal_coin,
+      withdrawal_amount,
+      payment_system,
+      account_number,
+      withdraw_date: new Date(),
+      status: "pending"
+    };
+
+    const result = await withdrawalsCollection.insertOne(withdrawData);
+
+    res.send({
+      success: true,
+      message: "Withdrawal request submitted",
+      insertedId: result.insertedId
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      success: false,
+      message: "Server error"
+    });
+  }
+});
+
+// Create Stripe checkout session
+app.post("/create-checkout-session", async (req, res) => {
+  const { email, coin, price } = req.body;
+
+  try {  
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
-      mode: "payment",
       line_items: [
         {
           price_data: {
             currency: "usd",
             product_data: {
-              name: `${coin} Coins Package`,
+              name: `${coin} Coins Purchase`,
             },
-            unit_amount: price * 100, 
+            unit_amount: Math.round(price * 100), 
           },
           quantity: 1,
         },
       ],
-      success_url: `${CLIENT_URL}/payment-success?userEmail=${userEmail}&coin=${coin}`,
-      cancel_url: `${CLIENT_URL}/payment-failed`,
+      mode: "payment",
+      // success_url: `${process.env.CLIENT_URL}/payment-success?email=${email}&coin=${coin}`,
+      success_url: `${CLIENT_URL}/payment-success?email=${email}&coin=${coin}&price=${price}`,
+      cancel_url: `${process.env.CLIENT_URL}/payment-failed`,
     });
 
     res.json({ url: session.url });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Stripe session creation failed" });
+    res.status(500).json({ message: err.message });
   }
 });
 
-// ================= PATCH USER COINS BY EMAIL ==================
-app.patch("/users/coins/:email", verifyJWT, async (req, res) => {
-  const { email, coins } = req.body;
-
-  if (!email || !coins || isNaN(coins) || Number(coins) <= 0) {
-    return res.status(400).json({
-      success: false,
-      message: "Valid email and positive coins amount required",
-    });
-  }
+// Increase coins (buyer paid via Stripe)
+app.patch("/users/increase-coins", async (req, res) => {
+  const { email, coin } = req.body;
 
   try {
-    const result = await usersCollection.updateOne(
-      { email: email.toLowerCase().trim() },     // normalize email
-      { $inc: { coin: Number(coins) } }
-    );
+    const user = await usersCollection.findOne({ email }); // MongoDB collection
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found with this email",
-      });
-    }
+    user.coin += coin;
+    await usersCollection.updateOne({ email }, { $set: { coin: user.coin } });
 
-    res.json({
-      success: true,
-      modifiedCount: result.modifiedCount,
-      message: `${coins} coins added`,
-    });
+    res.json({ message: "Coin increased successfully", coin: user.coin });
   } catch (err) {
-    console.error("Error updating coins:", err);
-    res.status(500).json({
-      success: false,
-      message: "Server error while updating coins",
-    });
+    res.status(500).json({ message: err.message });
   }
 });
 
-// Save payment
+
+
 app.post("/payments", verifyJWT, async (req, res) => {
   const { email, coins, amount } = req.body;
 
@@ -507,16 +616,29 @@ app.post("/payments", verifyJWT, async (req, res) => {
     };
     const result = await paymentsCollection.insertOne(paymentData);
 
+    const validPackages = [
+  { coin: 10, price: 1 },
+  { coin: 150, price: 10 },
+  { coin: 500, price: 20 },
+  { coin: 1000, price: 35 },
+];
+
+const selected = validPackages.find(p => p.coin === Number(coins));
+
+if (!selected || selected.price !== Number(amount)) {
+  return res.status(400).send({ message: "Invalid payment data" });
+}
     res.send({
       success: true,
       insertedId: result.insertedId,
-      transactionId,                      // return it to frontend if needed
+      transactionId,                      
     });
   } catch (err) {
     console.error("Payment save error:", err);
     res.status(500).send({ message: "Failed to save payment" });
   }
 });
+
 
  //find payment history 
 app.get("/payments/:email", verifyJWT, async (req, res) => {
@@ -536,7 +658,7 @@ app.get("/payments/:email", verifyJWT, async (req, res) => {
 });
 
    //workerhome//
-app.get("/worker-stats/:email", async (req, res) => {
+app.get("/worker-stats/:email", verifyJWT, verifyWorker, async (req, res) => {
   try {
     const { email } = req.params;
     if (!email) {
@@ -567,19 +689,59 @@ app.get("/worker-stats/:email", async (req, res) => {
   }
 });
 
- // ================= TASK LIST (active tasks) =================
-app.get("/tasks", async (req, res) => {
+
+// GET tasklist task for worker
+app.get("/tasks", verifyJWT, verifyWorker, async (req, res) => {
   try {
-    const tasks = await tasksCollection
-      .find({ status: "active" })
+    const {
+      taskType,
+      status,
+      maxAmount,
+      deadline,
+      sort = "deadline"
+    } = req.query;
+
+    const matchStage = {};
+
+    // Task Type filter
+    if (taskType) matchStage.task_type = taskType;
+
+    // Status filter
+    if (status) matchStage.status = status;
+
+    // Max Reward filter
+    if (maxAmount !== undefined && maxAmount !== "") {
+      matchStage.payable_amount = { $lte: Number(maxAmount) };
+    }
+
+    // Deadline filter
+    if (deadline) {
+      const selectedDate = new Date(deadline);
+      selectedDate.setHours(23, 59, 59, 999); // end of the day
+      matchStage.completion_date = { $lte: selectedDate };
+    }
+
+    // Sorting
+    const sortStage = sort === "amount" ? { payable_amount: -1 } : { completion_date: 1 };
+
+    console.log("Match Stage:", matchStage); // DEBUG
+
+    const tasks = await db
+      .collection("tasks")
+      .aggregate([
+        { $match: matchStage },
+        { $sort: sortStage }
+      ])
       .toArray();
 
     res.send(tasks);
 
   } catch (error) {
-    res.status(500).send({ message: "Failed to load tasks", error });
+    console.error("Filter error:", error);
+    res.status(500).send({ message: "Server error" });
   }
 });
+
 
 // ================= SINGLE TASK (TaskDetails page) =================
 app.get("/tasks/:id", async (req, res) => {
@@ -601,35 +763,108 @@ app.get("/tasks/:id", async (req, res) => {
     res.status(500).send({ message: "Failed to load task", error });
   }
 });
-app.post("/task-submit", async (req, res) => {
 
+
+app.post("/task-submit", verifyJWT, verifyWorker, async (req, res) => {
   try {
-
     const submission = req.body;
+    const taskObjectId = new ObjectId(submission.task_id);
 
-    // Save submission
-    await submissionsCollection.insertOne(submission);
+    // 1. Find task
+    const task = await tasksCollection.findOne({ _id: taskObjectId });
 
-    // Reduce worker count safely (never below 0)
-    await tasksCollection.updateOne(
-      { _id: new ObjectId(submission.task_id) },
-      { 
-        $inc: { required_workers: -1 } 
-      }
+    if (!task) {
+      return res.status(404).send({ message: "Task not found" });
+    }
+
+    // 2. Check task active
+    if (task.status !== "active") {
+      return res.status(400).send({ message: "This task is no longer active" });
+    }
+
+    //  FIX: Task full check (correct condition)
+    if (task.required_workers <= 0) {
+      return res.status(400).send({ message: "No workers needed for this task anymore" });
+    }
+
+    // 3. Check duplicate submission
+    const alreadySubmitted = await submissionsCollection.findOne({
+      task_id: taskObjectId,
+      worker_email: submission.worker_email,
+    });
+
+    if (alreadySubmitted) {
+      return res.status(400).send({ message: "You have already submitted this task" });
+    }
+
+    // 4. Create submission
+    await submissionsCollection.insertOne({
+      ...submission,
+      task_id: taskObjectId,
+      current_date: new Date(),
+      status: "pending",
+    });
+
+   // notification save
+await notificationsCollection.insertOne({
+  toEmail: submission.Buyer_email, 
+  message: `${submission.worker_name} submitted your task "${submission.task_title}"`,
+  type: "task_submission",
+  taskId: submission.task_id,
+  createdAt: new Date(),
+  read: false,
+});
+
+    // 5. Decrease worker count safely
+    const updatedTask = await tasksCollection.findOneAndUpdate(
+      {
+        _id: taskObjectId,
+        required_workers: { $gt: 0 },
+      },
+      {
+        $inc: { required_workers: -1 },
+        $set: { updatedAt: new Date() },
+      },
+      { returnDocument: "after" }
     );
 
-    res.send({ message: "Task submitted successfully" });
+    if (!updatedTask.value) {
+      return res.status(200).send({ message: "You have successfully submitted this task" });
+    }
+
+    //  SUCCESS MESSAGE (your requirement)
+    res.send({
+      success: true,
+      message: "You have successfully submitted this task",
+      workers_left: updatedTask.value.required_workers,
+    });
 
   } catch (error) {
-
-    res.status(500).send({ message: "Submission failed", error });
-
+    console.error("Task submission error:", error);
+    res.status(500).send({ message: "Server error while submitting task" });
   }
 });
 
 
+
+// GET /check-submission
+app.get("/check-submission", async (req, res) => {
+  try {
+    const { task_id, email } = req.query;
+
+    const submission = await submissionsCollection.findOne({
+      task_id: new ObjectId(task_id),
+      worker_email: email,
+    });
+
+    res.json({ alreadySubmitted: !!submission });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // GET submissions by worker email with pagination
-app.get("/my-submissions/:email", async (req, res) => {
+app.get("/my-submissions/:email", verifyJWT, verifyWorker, async (req, res) => {
   const workerEmail = req.params.email;
   const page = parseInt(req.query.page) || 1; 
   const limit = parseInt(req.query.limit) || 5;
@@ -657,44 +892,88 @@ app.get("/my-submissions/:email", async (req, res) => {
 });
 
 
-
-  //worker coin get api//
-app.get("/worker-coin/:email", async (req, res) => {
+//withraw section  coin
+app.get("/worker-coin", verifyJWT, async (req, res) => {
   try {
-    const email = req.params.email;
+    const email = req.user.email;
 
     const worker = await usersCollection.findOne({ email });
 
-    res.send({
-      coin: worker?.coin || 0
-    });
+    if (!worker) {
+      return res.send({ coin: 0, earning: 0 });
+    }
+
+    const coin = worker.coin || 0;
+    const earning = coin / 20; 
+
+    res.send({ coin, earning });
 
   } catch (error) {
-    res.status(500).send({ message: "Failed to get coin", error });
+    res.status(500).send({ message: "Failed to get worker coin" });
   }
 });
 
-  //worker coin withdrawls //
-app.post("/withdraw", async (req, res) => {
+
+    //worker request
+app.post("/withdraw", verifyJWT, verifyWorker, async (req, res) => {
   try {
-    const withdrawData = req.body;
-    await withdrawalsCollection.insertOne(withdrawData);
-    // decrease worker coin
+    const email = req.user.email;
+    const { withdrawal_coin, payment_system, account_number } = req.body;
+
+    if (withdrawal_coin < 200) {
+      return res.status(400).send({ message: "Minimum 200 coin required" });
+    }
+
+    const user = await usersCollection.findOne({ email });
+
+    if (!user || user.coin < withdrawal_coin) {
+      return res.status(400).send({ message: "Insufficient coin" });
+    }
+
+    const withdrawal_amount = withdrawal_coin / 20;
+
+    const withdrawInfo = {
+      worker_email: email,
+      worker_name: user.name,
+      withdrawal_coin,
+      withdrawal_amount,
+      payment_system,
+      account_number,
+      withdraw_date: new Date(),
+      status: "pending"
+    };
+
+    await withdrawalsCollection.insertOne(withdrawInfo);
+
+const admins = await usersCollection.find({ role: "admin" }).toArray();
+
+for (const admin of admins) {
+  await notificationsCollection.insertOne({
+    toEmail:admin.email,
+    message: `${withdrawInfo.worker_name} requested withdrawal`,
+    type: "withdraw_request",
+    createdAt: new Date(),
+    read: false,
+  });
+}
+
     await usersCollection.updateOne(
-      { email: withdrawData.worker_email },
-      { $inc: { coin: -withdrawData.withdrawal_coin } }
+      { email },
+      { $inc: { coin: -withdrawal_coin } }
     );
-    res.send({ message: "Withdrawal requested successfully" });
+
+    res.send({ message: "Withdrawal request submitted" });
 
   } catch (error) {
-    res.status(500).send({ message: "Withdraw failed", error });
+    res.status(500).send({ message: "Withdraw failed" });
   }
 });
 
 
 
-    // ================= ADMIN STATS =================
-    app.get("/admin-stats", async (req, res) => {
+
+   // ================= ADMIN STATS =================  
+    app.get("/admin-stats", verifyJWT, verifyAdmin, async (req, res) => {
       try {
         const workers = await usersCollection.countDocuments({ role: "worker" });
         const buyers = await usersCollection.countDocuments({ role: "buyer" });
@@ -723,9 +1002,8 @@ app.post("/withdraw", async (req, res) => {
       }
     });
 
-
     // ================= WITHDRAW REQUEST =================
-    app.get("/withdraw-requests", async (req, res) => {
+    app.get("/withdraw-requests", verifyJWT, verifyAdmin, async (req, res) => {
       try {
         const result = await withdrawalsCollection
           .find({ status: "pending" })
@@ -740,35 +1018,67 @@ app.post("/withdraw", async (req, res) => {
 
 
     // ================= admin APPROVE WITHDRAW =================
-    app.patch("/withdraw-approve/:id", async (req, res) => {
+app.patch("/withdraw-approve/:id", verifyJWT, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
 
-      const { id } = req.params;
-      const { email, coin } = req.body;
-
-      try {
-
-        // deduct worker coin
-        await usersCollection.updateOne(
-          { email: email },
-          { $inc: { coin: -coin } }
-        );
-
-        // update withdraw status
-        const result = await withdrawalsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status: "approved" } }
-        );
-
-        res.send(result);
-
-      } catch (err) {
-        res.status(500).send({ message: "Approve error", err });
-      }
+  try {
+    const withdraw = await withdrawalsCollection.findOne({
+      _id: new ObjectId(id),
     });
+
+    if (!withdraw) {
+      return res.status(404).send({ message: "Withdraw request not found" });
+    }
+
+    if (withdraw.status === "approved") {
+      return res.status(400).send({ message: "Already approved" });
+    }
+
+    // ✅ FIX: use withdraw data instead of req.body
+    await usersCollection.updateOne(
+      { email: withdraw.worker_email },
+      { $inc: { coin: -withdraw.withdrawal_coin } }
+    );
+
+    await withdrawalsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: "approved" } }
+    );
+
+    // payment save
+    await paymentsCollection.insertOne({
+      email: withdraw.worker_email,
+      name: withdraw.worker_name,
+      amount: withdraw.withdrawal_amount,
+      coin: withdraw.withdrawal_coin,
+      payment_system: withdraw.payment_system,
+      account_number: withdraw.account_number,
+      status: "success",
+      date: new Date(),
+      type: "withdraw",
+    });
+
+    // ✅ notification
+    await notificationsCollection.insertOne({
+     toEmail: withdraw.worker_email,
+      message: `Your withdrawal request of $${withdraw.withdrawal_amount} has been approved ✅`,
+      type: "withdraw_approved",
+      createdAt: new Date(),
+      read: false,
+    });
+
+    res.send({ success: true });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Approve error" });
+  }
+});
+
 
 
     // ================= GET ALL USERS =================
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
       try {
         const users = await usersCollection.find().toArray();
         res.send(users);
@@ -812,8 +1122,61 @@ app.post("/withdraw", async (req, res) => {
     });
 
 
-    // ================= GET ALL TASKS (with buyer info) =================
-    app.get("/tasks", async (req, res) => {
+// // GET manage task
+// app.get("/managetasks", verifyJWT, verifyAdmin, async (req, res) => {
+//   try {
+//     const {
+//       taskType,
+//       status,
+//       maxAmount,
+//       deadline,
+//       sort = "deadline"
+//     } = req.query;
+
+//     const matchStage = {};
+
+//     // Task Type filter
+//     if (taskType) matchStage.task_type = taskType;
+
+//     // Status filter
+//     if (status) matchStage.status = status;
+
+//     // Max Reward filter
+//     if (maxAmount !== undefined && maxAmount !== "") {
+//       matchStage.payable_amount = { $lte: Number(maxAmount) };
+//     }
+
+//     // Deadline filter
+//     if (deadline) {
+//       const selectedDate = new Date(deadline);
+//       selectedDate.setHours(23, 59, 59, 999); // end of the day
+//       matchStage.completion_date = { $lte: selectedDate };
+//     }
+
+//     // Sorting
+//     const sortStage = sort === "amount" ? { payable_amount: -1 } : { completion_date: 1 };
+
+//     console.log("Match Stage:", matchStage); // DEBUG
+
+//     const tasks = await db
+//       .collection("tasks")
+//       .aggregate([
+//         { $match: matchStage },
+//         { $sort: sortStage }
+//       ])
+//       .toArray();
+
+//     res.send(tasks);
+
+//   } catch (error) {
+//     console.error("Filter error:", error);
+//     res.status(500).send({ message: "Server error" });
+//   }
+// });
+
+
+    // ================= GET ALL TASKS =================
+    app.get("/managetasks", verifyJWT, verifyAdmin, async (req, res) => {
       try {
         const tasks = await tasksCollection.find().toArray();
 
@@ -841,10 +1204,10 @@ app.post("/withdraw", async (req, res) => {
     });
 
 
-   // ============ DELETE TASK BY EMAIL ============
-
-app.delete("/tasks/by-email/:email", verifyJWT, async (req, res) => {
-  const email = req.params.email;
+  
+// DELETE task by email (admin only)
+app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
+  const email = req.params.email.toLowerCase().trim(); // normalize
 
   try {
     const result = await tasksCollection.deleteOne({
@@ -868,6 +1231,7 @@ app.delete("/tasks/by-email/:email", verifyJWT, async (req, res) => {
     });
   }
 });
+
 
 // ======================
 app.listen(process.env.PORT, () => {
