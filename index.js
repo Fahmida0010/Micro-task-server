@@ -4,6 +4,7 @@ const Stripe = require("stripe");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId } = require("mongodb");
+const { time } = require("console");
 require("dotenv").config();
 const app = express();
 
@@ -13,21 +14,20 @@ const CLIENT_URL = process.env.CLIENT_URL;
 
 //middleware
 app.use(cors({
-  origin: "http://localhost:5173",
+  origin: ["http://localhost:5173",
+   "https://golden-crostata-a7c55d.netlify.app"],
   credentials: true,
 }));
 app.use(express.json());
 
-// ======================
-// Test Route
-// ======================
-app.get("/", (req, res) => {
-  res.send("Micro Task Server is running 🚀");
-});
 
-// ======================
+// // Test Route
+// app.get("/", (req, res) => {
+//   res.send("Micro Task Server is running 🚀");
+// });
+
+
 // MongoDB Connection
-// ======================
 const client = new MongoClient(process.env.DB_URI);
 
 let db;
@@ -36,6 +36,7 @@ let tasksCollection;
 let paymentsCollection;
 let submissionsCollection;
 let withdrawalsCollection;
+let notificationsCollection;
 
 async function connectDB() {
   try {
@@ -56,7 +57,21 @@ async function connectDB() {
   }
 }
 
-connectDB();
+//  connectDB();
+async function startServer() {
+  try {
+    await connectDB(); 
+
+    app.listen(3000, () => {
+      console.log(" MicroTask Server is running 🚀");
+    });
+
+  } catch (error) {
+    console.error("Server start failed:", error);
+  }
+}
+
+startServer();
 
 
 // JWT Middleware 
@@ -137,8 +152,8 @@ app.get("/notifications/:email", async (req, res) => {
   const email = req.params.email;
 
   const result = await notificationsCollection
-    .find({userEmail: email })
-    .sort({ createdAt: -1 })
+    .find({toEmail: email })
+    .sort({ time: -1 })
     .toArray();
 
   res.send(result);
@@ -187,6 +202,7 @@ app.post("/users", async (req, res) => {
     res.status(500).send({ success: false });
   }
 });
+
 // user info
 app.get("/user/info", async (req, res) => {
   const email = req.query.email;
@@ -194,8 +210,8 @@ app.get("/user/info", async (req, res) => {
   if (!email) {
     return res.status(400).send({ message: "Email required" });
   }
-
   const user = await usersCollection.findOne({ email });
+  console.log("usersCollection:", usersCollection);
 
   if (!user) {
     return res.status(404).send({ message: "User not found" });
@@ -1233,7 +1249,7 @@ app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
 });
 
 
-// ======================
-app.listen(process.env.PORT, () => {
-  console.log(`Server running on port ${process.env.PORT}`);
-});
+// // ======================
+// app.listen(process.env.PORT, () => {
+//   console.log(`Server running on port ${process.env.PORT}`);
+// });
