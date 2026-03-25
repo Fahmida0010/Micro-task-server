@@ -21,10 +21,10 @@ app.use(cors({
 app.use(express.json());
 
 
-// // Test Route
-// app.get("/", (req, res) => {
-//   res.send("Micro Task Server is running 🚀");
-// });
+// Test Route
+app.get("/", (req, res) => {
+  res.send("Micro Task Server is running 🚀");
+});
 
 
 // MongoDB Connection
@@ -40,7 +40,7 @@ let notificationsCollection;
 
 async function connectDB() {
   try {
-    await client.connect();
+  
     db = client.db("Microtask");
 
     usersCollection = db.collection("users");
@@ -56,22 +56,7 @@ async function connectDB() {
     console.error("MongoDB Connection Failed:", error);
   }
 }
-
-//  connectDB();
-async function startServer() {
-  try {
-    await connectDB(); 
-
-    app.listen(3000, () => {
-      console.log(" MicroTask Server is running 🚀");
-    });
-
-  } catch (error) {
-    console.error("Server start failed:", error);
-  }
-}
-
-startServer();
+  connectDB();
 
 
 // JWT Middleware 
@@ -396,7 +381,7 @@ app.get("/submissions/buyer/:email", verifyJWT, verifyBuyer, async (req, res) =>
   });
 
 
-// AddTask API
+// AddTask API for buyer
 app.post("/tasks",  verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const task = req.body;
@@ -435,7 +420,7 @@ app.post("/tasks",  verifyJWT, verifyBuyer, async (req, res) => {
 });
 
 
-// GET MY TASKS DESCENDING
+// GET MY TASKS DESCENDING for buyer
 app.get("/tasks/my",  verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const email = req.decoded.email;
@@ -452,7 +437,7 @@ app.get("/tasks/my",  verifyJWT, verifyBuyer, async (req, res) => {
 });
 
 
-// UPDATE myTASK
+// UPDATE myTASK for buyer
 app.patch("/tasks/:id", verifyJWT, async (req, res) => {
   const id = req.params.id;
   const email = req.decoded.email;
@@ -520,6 +505,25 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
       return res.status(400).send({
         message: "Minimum 200 coins required to withdraw"
       });
+      
+    }
+
+     //  NOTIFICATION PART START
+    const admins = await usersCollection.find({ role: "admin" }).toArray();
+
+    // 2️⃣ প্রত্যেক admin এর জন্য notification save করো
+    for (const admin of admins) {
+      await notificationsCollection.insertOne({
+        toEmail: admin.email, // 👈 admin receive করবে
+        fromEmail: worker_email, // 👈 worker email
+        worker_name: worker_name,
+
+        message: `${worker_name} requested ${withdrawal_amount}$ via ${payment_system}`,
+
+        type: "withdraw_request",
+        time: new Date(),
+        read: false,
+      });
     }
 
     const user = await usersCollection.findOne({ email });
@@ -535,7 +539,7 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
     const withdrawal_amount = withdrawal_coin / 20;
 
     const withdrawData = {
-      worker_email: email,
+      worker_email: worker_email,
       worker_name,
       withdrawal_coin,
       withdrawal_amount,
@@ -563,7 +567,9 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
   }
 });
 
-// Create Stripe checkout session
+
+
+//Create Stripe checkout session
 app.post("/create-checkout-session", async (req, res) => {
   const { email, coin, price } = req.body;
 
@@ -1138,59 +1144,6 @@ app.patch("/withdraw-approve/:id", verifyJWT, verifyAdmin, async (req, res) => {
     });
 
 
-// // GET manage task
-// app.get("/managetasks", verifyJWT, verifyAdmin, async (req, res) => {
-//   try {
-//     const {
-//       taskType,
-//       status,
-//       maxAmount,
-//       deadline,
-//       sort = "deadline"
-//     } = req.query;
-
-//     const matchStage = {};
-
-//     // Task Type filter
-//     if (taskType) matchStage.task_type = taskType;
-
-//     // Status filter
-//     if (status) matchStage.status = status;
-
-//     // Max Reward filter
-//     if (maxAmount !== undefined && maxAmount !== "") {
-//       matchStage.payable_amount = { $lte: Number(maxAmount) };
-//     }
-
-//     // Deadline filter
-//     if (deadline) {
-//       const selectedDate = new Date(deadline);
-//       selectedDate.setHours(23, 59, 59, 999); // end of the day
-//       matchStage.completion_date = { $lte: selectedDate };
-//     }
-
-//     // Sorting
-//     const sortStage = sort === "amount" ? { payable_amount: -1 } : { completion_date: 1 };
-
-//     console.log("Match Stage:", matchStage); // DEBUG
-
-//     const tasks = await db
-//       .collection("tasks")
-//       .aggregate([
-//         { $match: matchStage },
-//         { $sort: sortStage }
-//       ])
-//       .toArray();
-
-//     res.send(tasks);
-
-//   } catch (error) {
-//     console.error("Filter error:", error);
-//     res.status(500).send({ message: "Server error" });
-//   }
-// });
-
-
     // ================= GET ALL TASKS =================
     app.get("/managetasks", verifyJWT, verifyAdmin, async (req, res) => {
       try {
@@ -1223,11 +1176,11 @@ app.patch("/withdraw-approve/:id", verifyJWT, verifyAdmin, async (req, res) => {
   
 // DELETE task by email (admin only)
 app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
-  const email = req.params.email.toLowerCase().trim(); // normalize
+  const Buyer_email = req.params.email.toLowerCase().trim(); 
 
   try {
     const result = await tasksCollection.deleteOne({
-      Buyer_email: email
+      Buyer_email:Buyer_email
     });
 
     if (result.deletedCount === 0) {
@@ -1249,7 +1202,7 @@ app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
 });
 
 
-// // ======================
-// app.listen(process.env.PORT, () => {
-//   console.log(`Server running on port ${process.env.PORT}`);
-// });
+// ======================
+app.listen(process.env.PORT, () => {
+  console.log(`Server running on port ${process.env.PORT}`);
+});
