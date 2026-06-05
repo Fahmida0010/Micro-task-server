@@ -161,6 +161,37 @@ The platform generates profit from the difference between the coin purchase rate
 
 ---
 
+---
+
+# 🤝 Contributing
+
+Contributions are always welcome!
+
+If you'd like to improve **MicroTask**, feel free to fork the repository, enhance existing features, fix bugs, optimize performance, or introduce new functionalities.
+
+### How to Contribute
+
+1. Fork the repository
+2. Create a new feature branch
+3. Make your changes
+4. Commit and push your updates
+5. Open a Pull Request
+
+Whether it's improving the UI, adding new features, enhancing security, or refining the user experience, every contribution helps make **MicroTask** even better.
+
+---
+
+# ⭐ Support & Thanks
+
+Thank you for taking the time to explore **MicroTask**.
+
+If you found this project useful or interesting, please consider giving the repository a **⭐ Star**. It helps increase visibility, motivates further development, and supports the growth of the project.
+
+Your feedback, suggestions, and contributions are highly appreciated.
+
+**Happy Coding! 🚀**
+
+
 ## ❤️ Conclusion
 
 This project demonstrates a complete **MERN Stack application** featuring authentication, role-based authorization, payment integration, task management, notifications, and real-world business logic.
