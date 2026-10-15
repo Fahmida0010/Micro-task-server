@@ -7,6 +7,9 @@ const { MongoClient, ObjectId } = require("mongodb");
 const { time } = require("console");
 require("dotenv").config();
 const app = express();
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const CLIENT_URL = process.env.CLIENT_URL;
@@ -15,11 +18,26 @@ const CLIENT_URL = process.env.CLIENT_URL;
 //middleware
 app.use(cors({
   origin: ["http://localhost:5173",
-   "https://golden-crostata-a7c55d.netlify.app"],
+   "https://micro-task-client.onrender.com"],
   credentials: true,
 }));
 app.use(express.json());
 
+// Static folder setup (Upload kora image public URL e access korar jonno)
+app.use("/uploads", express.static("uploads"));
+
+// Multer Disk Storage Configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/"); // Server root-e 'uploads' namer folder thakte hobe
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+const upload = multer({ storage });
 
 // Test Route
 app.get("/", (req, res) => {
@@ -208,6 +226,37 @@ app.get("/user/info", async (req, res) => {
   });
 });
 
+
+app.patch("/users/update-profile/:email", upload.single("image"), async (req, res) => {
+  try {
+    const email = req.params.email;
+    const { name } = req.body;
+
+    const updatedData = {};
+    if (name) updatedData.name = name;
+
+    if (req.file) {
+      const photoUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+      updatedData.photo = photoUrl;
+    }
+
+    const filter = { email: email };
+    const updateDoc = { $set: updatedData };
+
+    const result = await usersCollection.updateOne(filter, updateDoc);
+
+    res.send({
+      success: true,
+      message: "Profile updated successfully!",
+      updatedData,
+      result,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ success: false, message: "Profile update failed!" });
+  }
+});
+
 app.get("/users/:email", verifyJWT, async (req, res) => {
 
   const email = req.params.email;
@@ -224,6 +273,8 @@ app.get("/users/:email", verifyJWT, async (req, res) => {
 
   res.send(user);
 });
+
+
 
 //jwt
 app.post("/jwt", (req, res) => {
@@ -514,8 +565,8 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
     // 2️⃣ প্রত্যেক admin এর জন্য notification save করো
     for (const admin of admins) {
       await notificationsCollection.insertOne({
-        toEmail: admin.email, // 👈 admin receive করবে
-        fromEmail: worker_email, // 👈 worker email
+        toEmail: admin.email, //  admin receive করবে
+        fromEmail: worker_email, //  worker email
         worker_name: worker_name,
 
         message: `${worker_name} requested ${withdrawal_amount}$ via ${payment_system}`,
@@ -589,9 +640,8 @@ app.post("/create-checkout-session", async (req, res) => {
         },
       ],
       mode: "payment",
-      // success_url: `${process.env.CLIENT_URL}/payment-success?email=${email}&coin=${coin}`,
-      success_url: `${CLIENT_URL}/payment-success?email=${email}&coin=${coin}&price=${price}`,
-      cancel_url: `${process.env.CLIENT_URL}/payment-failed`,
+      success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?email=${email}&coin=${coin}&price=${price}`,
+      cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-failed`,
     });
 
     res.json({ url: session.url });
