@@ -226,37 +226,6 @@ app.get("/user/info", async (req, res) => {
   });
 });
 
-// User preferences update route (PUT)
-app.put('/api/users/preferences', verifyJWT, async (req, res) => {
-  try {
-    const userId = req.user._id; // ba req.user.id (apnar JWT middleware-er upor nirbhor kore)
-    const { theme, language } = req.body;
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { 
-        $set: { 
-          'preferences.theme': theme, 
-          'preferences.language': language 
-        } 
-      },
-      { new: true }
-    );
-
-    if (!updatedUser) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    res.status(200).json({ 
-      success: true, 
-      message: 'Preferences updated successfully', 
-      preferences: updatedUser.preferences 
-    });
-  } catch (error) {
-    console.error('Error updating preferences:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
 
 app.patch("/users/update-profile/:email", upload.single("image"), async (req, res) => {
   try {
@@ -794,7 +763,7 @@ app.get("/worker-stats/:email", verifyJWT, verifyWorker, async (req, res) => {
 
 
 // GET tasklist task for worker
-app.get("/tasks", verifyJWT, verifyWorker, async (req, res) => {
+app.get("/tasks", async (req, res) => {
   try {
     const {
       taskType,
@@ -847,7 +816,7 @@ app.get("/tasks", verifyJWT, verifyWorker, async (req, res) => {
 
 
 // ================= SINGLE TASK (TaskDetails page) =================
-app.get("/tasks/:id", async (req, res) => {
+app.get("/tasks/:id", verifyJWT, verifyWorker, async (req, res) => {
   try {
 
     const id = req.params.id;
