@@ -391,7 +391,7 @@ app.get("/submissions/buyer/:email", verifyJWT, verifyBuyer, async (req, res) =>
       message: `You have earned ${submission.payable_amount} from ${submission.Buyer_name} for completing ${submission.task_title}`,
       toEmail: submission.worker_email,
       actionRoute: "/dashboard/worker-home",
-      time: new Date(),
+       createdAt: new Date(),
     });
 
     res.json({ 
@@ -421,7 +421,7 @@ app.get("/submissions/buyer/:email", verifyJWT, verifyBuyer, async (req, res) =>
       message: `Your submission for ${submission.task_title} was rejected by ${submission.Buyer_name}`,
       toEmail: submission.worker_email,
       actionRoute: "/dashboard/worker-home",
-      time: new Date(),
+       createdAt: new Date(),
     });
 
       res.json({ message: "Submission rejected successfully" });
@@ -589,7 +589,7 @@ app.post("/withdraw", verifyJWT, verifyWorker, async (req, res) => {
         worker_name: worker_name,
         message: `${worker_name} requested $${withdrawal_amount} via ${payment_system}`,
         type: "withdraw_request",
-        time: new Date(),
+         createdAt: new Date(),
         read: false,
       });
     }
