@@ -1255,6 +1255,22 @@ app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
 });
 
 
+// GET /submissions/approved
+// Fetch all approved submissions with JWT authorization
+app.get("/submissions/approved", verifyJWT, async (req, res) => {
+  try {
+    // Database theke shudhu status = "approved" er data-gulo search kora hocche
+    const approvedSubmissions = await submissionsCollection
+      .find({ status: "approved" })
+      .sort({ approvedAt: -1, current_date: -1 }) // Latest approved gulo prothome ashbe
+      .toArray();
+
+    res.status(200).json(approvedSubmissions);
+  } catch (err) {
+    console.error("Approved submissions fetch error:", err);
+    res.status(500).json({ message: "Failed to fetch approved submissions" });
+  }
+});
 // ======================
 app.listen(process.env.PORT, () => {
   console.log(`Server running on port ${process.env.PORT}`);
