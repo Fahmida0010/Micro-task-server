@@ -819,7 +819,7 @@ app.get("/tasks", async (req, res) => {
 
 
 // ================= SINGLE TASK (TaskDetails page) =================
-app.get("/tasks/:id", verifyJWT, verifyWorker, async (req, res) => {
+app.get("/tasks/:id", async (req, res) => {
   try {
 
     const id = req.params.id;
