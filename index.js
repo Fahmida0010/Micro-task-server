@@ -537,8 +537,7 @@ app.delete("/tasks/:id", verifyJWT, async (req, res) => {
   res.send({ success: true, refillAmount });
 });
 
-
-app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
+app.post("/withdraw", verifyJWT, verifyWorker, async (req, res) => {
   try {
     const {
       email,
@@ -556,25 +555,6 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
       return res.status(400).send({
         message: "Minimum 200 coins required to withdraw"
       });
-      
-    }
-
-     //  NOTIFICATION PART START
-    const admins = await usersCollection.find({ role: "admin" }).toArray();
-
-    // 2️⃣ প্রত্যেক admin এর জন্য notification save করো
-    for (const admin of admins) {
-      await notificationsCollection.insertOne({
-        toEmail: admin.email, //  admin receive করবে
-        fromEmail: worker_email, //  worker email
-        worker_name: worker_name,
-
-        message: `${worker_name} requested ${withdrawal_amount}$ via ${payment_system}`,
-
-        type: "withdraw_request",
-        time: new Date(),
-        read: false,
-      });
     }
 
     const user = await usersCollection.findOne({ email });
@@ -589,8 +569,34 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
 
     const withdrawal_amount = withdrawal_coin / 20;
 
+    // 🔥 ১. ইউজারের কয়েন মাইনাস করার জন্য ডাটাবেজ আপডেট করুন
+    const updateResult = await usersCollection.updateOne(
+      { email: email },
+      { $inc: { coin: -withdrawal_coin } } // বর্তমান কয়েন থেকে উইথড্র করা কয়েন বিয়োগ হবে
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      return res.status(500).send({ message: "Failed to deduct coins" });
+    }
+
+    // ২. নোটিফিকেশন পাঠানো
+    const admins = await usersCollection.find({ role: "admin" }).toArray();
+
+    for (const admin of admins) {
+      await notificationsCollection.insertOne({
+        toEmail: admin.email,
+        fromEmail: email,
+        worker_name: worker_name,
+        message: `${worker_name} requested $${withdrawal_amount} via ${payment_system}`,
+        type: "withdraw_request",
+        time: new Date(),
+        read: false,
+      });
+    }
+
+    // ৩. উইথড্র রিকোয়েস্ট সেভ করা
     const withdrawData = {
-      worker_email: worker_email,
+      worker_email: email,
       worker_name,
       withdrawal_coin,
       withdrawal_amount,
@@ -610,15 +616,12 @@ app.post("/withdraw", verifyJWT,verifyWorker, async (req, res) => {
 
   } catch (error) {
     console.error(error);
-
     res.status(500).send({
       success: false,
       message: "Server error"
     });
   }
 });
-
-
 
 //Create Stripe checkout session
 app.post("/create-checkout-session", async (req, res) => {
