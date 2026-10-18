@@ -764,7 +764,6 @@ app.get("/worker-stats/:email", verifyJWT, verifyWorker, async (req, res) => {
   }
 });
 
-
 // GET tasklist task for worker
 app.get("/tasks", async (req, res) => {
   try {
@@ -792,7 +791,7 @@ app.get("/tasks", async (req, res) => {
     // Deadline filter
     if (deadline) {
       const selectedDate = new Date(deadline);
-      selectedDate.setHours(23, 59, 59, 999); // end of the day
+      selectedDate.setHours(23, 59, 59, 999);
       matchStage.completion_date = { $lte: selectedDate };
     }
 
@@ -801,8 +800,8 @@ app.get("/tasks", async (req, res) => {
 
     console.log("Match Stage:", matchStage); // DEBUG
 
-    const tasks = await db
-      .collection("tasks")
+    // 🔴 FIX 1: db.collection("tasks") er jaygay tasksCollection use kora
+    const tasks = await tasksCollection
       .aggregate([
         { $match: matchStage },
         { $sort: sortStage }
@@ -816,7 +815,6 @@ app.get("/tasks", async (req, res) => {
     res.status(500).send({ message: "Server error" });
   }
 });
-
 
 // ================= SINGLE TASK (TaskDetails page) =================
 app.get("/tasks/:id", async (req, res) => {
@@ -1257,7 +1255,7 @@ app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
 
 // GET /submissions/approved
 // Fetch all approved submissions with JWT authorization
-app.get("/submissions/approved", verifyJWT, async (req, res) => {
+app.get("/submissions/approved", async (req, res) => {
   try {
     // Database theke shudhu status = "approved" er data-gulo search kora hocche
     const approvedSubmissions = await submissionsCollection
