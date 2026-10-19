@@ -433,7 +433,7 @@ app.get("/submissions/buyer/:email", verifyJWT, verifyBuyer, async (req, res) =>
 
 
 // AddTask API for buyer
-app.post("/tasks",  verifyJWT, verifyBuyer, async (req, res) => {
+app.post("/add-tasks",  verifyJWT, verifyBuyer, async (req, res) => {
   try {
     const task = req.body;
     const buyerEmail = task.Buyer_email;
