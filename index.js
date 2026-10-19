@@ -10,6 +10,8 @@ const app = express();
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { GoogleGenAI } = require('@google/genai');
+
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const CLIENT_URL = process.env.CLIENT_URL;
@@ -23,10 +25,69 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Initialize Gemini Client
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// System Instruction to give MicroTask context to the AI
+const MICROTASK_SYSTEM_INSTRUCTION = `
+You are the official AI Support Assistant for MicroTask - a micro tasking and earning platform.
+Key Information:
+- Platform Roles: Worker, Buyer, Admin.
+- Business Logic:
+  * Buyer purchases coins: 10 coins = $1 (via Stripe).
+  * Worker withdraws earnings: 20 coins = $1.
+  * Platform earns profit from this difference.
+- Features:
+  * Workers complete tasks, earn coins, and withdraw money.
+  * Buyers post tasks, manage task submissions, approve/reject tasks, and buy coins.
+  * Admins manage users, tasks, statistics, and approve withdrawals.
+- Image Hosting: imgBB.
+- Authentication: Firebase + JWT.
+
+Rules:
+- Be polite, concise, and helpful.
+- Help users understand how worker earnings, buyer task creations, coin conversions, and withdrawals work.
+- If asked about non-MicroTask issues, politely redirect them back to MicroTask platform guidance.
+`;
+
+// AI Support Endpoint
+app.post('/api/ai/chat', async (req, res) => {
+  try {
+    const { message, history } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Format previous chat history if available
+    const formattedHistory = (history || []).map(item => ({
+      role: item.sender === 'user' ? 'user' : 'model',
+      parts: [{ text: item.text }]
+    }));
+
+    // MODEL NAME EKHANE CHANGE KORE "gemini-3.8-flash" BA "gemini-1.5-flash" DIN
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash', 
+      contents: [
+        ...formattedHistory,
+        { role: 'user', parts: [{ text: message }] }
+      ],
+      config: {
+        systemInstruction: MICROTASK_SYSTEM_INSTRUCTION,
+        temperature: 0.7,
+      }
+    });
+
+    const reply = response.text;
+    res.json({ reply });
+  } catch (error) {
+    console.error('Error generating AI response:', error);
+    res.status(500).json({ error: 'Failed to process AI response' });
+  }
+});
+
 // Static folder setup (Upload kora image public URL e access korar jonno)
 app.use("/uploads", express.static("uploads"));
-
-// Multer Disk Storage Configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, "uploads/"); // Server root-e 'uploads' namer folder thakte hobe
@@ -214,7 +275,6 @@ app.get("/user/info", async (req, res) => {
     return res.status(400).send({ message: "Email required" });
   }
   const user = await usersCollection.findOne({ email });
-  console.log("usersCollection:", usersCollection);
 
   if (!user) {
     return res.status(404).send({ message: "User not found" });
