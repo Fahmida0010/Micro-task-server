@@ -285,6 +285,191 @@ app.post("/jwt", (req, res) => {
   res.send({ token });
 });
 
+ //workerhome//
+app.get("/worker-stats/:email", verifyJWT, verifyWorker, async (req, res) => {
+  try {
+    const { email } = req.params;
+    if (!email) {
+      return res.status(400).send({ message: "Email is required" });
+    }
+
+    const submissions = await submissionsCollection
+      .find({ worker_email: email })
+      .toArray();
+
+    const approved = submissions.filter((sub) => sub.status === "approved");
+    const pending = submissions.filter((sub) => sub.status === "pending");
+
+    const totalEarning = approved.reduce(
+      (sum, item) => sum + Number(item.payable_amount || 0),
+      0
+    );
+
+    res.send({
+      totalSubmissions: submissions.length,
+      totalPending: pending.length,
+      totalEarning,
+      approvedSubmissions: approved,
+    });
+  } catch (error) {
+    console.error("Worker stats error:", error);
+    res.status(500).send({ message: "Server error", error: error.message });
+  }
+});
+
+// GET tasklist task for worker
+app.get("/tasks", async (req, res) => {
+  try {
+    const {
+      taskType,
+      status,
+      maxAmount,
+      deadline,
+      sort = "deadline"
+    } = req.query;
+
+    const matchStage = {};
+
+    // Task Type filter
+    if (taskType) matchStage.task_type = taskType;
+
+    // Status filter
+    if (status) matchStage.status = status;
+
+    // Max Reward filter
+    if (maxAmount !== undefined && maxAmount !== "") {
+      matchStage.payable_amount = { $lte: Number(maxAmount) };
+    }
+
+    // Deadline filter
+    if (deadline) {
+      const selectedDate = new Date(deadline);
+      selectedDate.setHours(23, 59, 59, 999);
+      matchStage.completion_date = { $lte: selectedDate };
+    }
+
+    // Sorting
+    const sortStage = sort === "amount" ? { payable_amount: -1 } : { completion_date: 1 };
+
+    console.log("Match Stage:", matchStage); // DEBUG
+
+    // 🔴 FIX 1: db.collection("tasks") er jaygay tasksCollection use kora
+    const tasks = await tasksCollection
+      .aggregate([
+        { $match: matchStage },
+        { $sort: sortStage }
+      ])
+      .toArray();
+
+    res.send(tasks);
+
+  } catch (error) {
+    console.error("Filter error:", error);
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+// ================= SINGLE TASK (TaskDetails page) =================
+app.get("/tasks/:id", async (req, res) => {
+  try {
+
+    const id = req.params.id;
+
+    const task = await tasksCollection.findOne({
+      _id: new ObjectId(id)
+    });
+
+    if (!task) {
+      return res.status(404).send({ message: "Task not found" });
+    }
+
+    res.send(task);
+
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load task", error });
+  }
+});
+
+
+app.post("/task-submit", verifyJWT, verifyWorker, async (req, res) => {
+  try {
+    const submission = req.body;
+    const taskObjectId = new ObjectId(submission.task_id);
+
+    // 1. Find task
+    const task = await tasksCollection.findOne({ _id: taskObjectId });
+
+    if (!task) {
+      return res.status(404).send({ message: "Task not found" });
+    }
+
+    // 2. Check task active
+    if (task.status !== "active") {
+      return res.status(400).send({ message: "This task is no longer active" });
+    }
+
+    //  FIX: Task full check (correct condition)
+    if (task.required_workers <= 0) {
+      return res.status(400).send({ message: "No workers needed for this task anymore" });
+    }
+
+    // 3. Check duplicate submission
+    const alreadySubmitted = await submissionsCollection.findOne({
+      task_id: taskObjectId,
+      worker_email: submission.worker_email,
+    });
+
+    if (alreadySubmitted) {
+      return res.status(400).send({ message: "You have already submitted this task" });
+    }
+
+    // 4. Create submission
+    await submissionsCollection.insertOne({
+      ...submission,
+      task_id: taskObjectId,
+      current_date: new Date(),
+      status: "pending",
+    });
+
+   // notification save
+await notificationsCollection.insertOne({
+  toEmail: submission.Buyer_email, 
+  message: `${submission.worker_name} submitted your task "${submission.task_title}"`,
+  type: "task_submission",
+  taskId: submission.task_id,
+  createdAt: new Date(),
+  read: false,
+});
+
+    // 5. Decrease worker count safely
+    const updatedTask = await tasksCollection.findOneAndUpdate(
+      {
+        _id: taskObjectId,
+        required_workers: { $gt: 0 },
+      },
+      {
+        $inc: { required_workers: -1 },
+        $set: { updatedAt: new Date() },
+      },
+      { returnDocument: "after" }
+    );
+
+    if (!updatedTask.value) {
+      return res.status(200).send({ message: "You have successfully submitted this task" });
+    }
+
+    //  SUCCESS MESSAGE (your requirement)
+    res.send({
+      success: true,
+      message: "You have successfully submitted this task",
+      workers_left: updatedTask.value.required_workers,
+    });
+
+  } catch (error) {
+    console.error("Task submission error:", error);
+    res.status(500).send({ message: "Server error while submitting task" });
+  }
+});
    
 // ======================
 // GET /buyer/stats/:email
@@ -353,6 +538,23 @@ app.get("/submissions/buyer/:email", verifyJWT, verifyBuyer, async (req, res) =>
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// Fetch all approved submissions with JWT authorization
+app.get("/submissions/approved", async (req, res) => {
+  try {
+    // Database theke shudhu status = "approved" er data-gulo search kora hocche
+    const approvedSubmissions = await submissionsCollection
+      .find({ status: "approved" })
+      .sort({ approvedAt: -1, current_date: -1 }) // Latest approved gulo prothome ashbe
+      .toArray();
+
+    res.status(200).json(approvedSubmissions);
+  } catch (err) {
+    console.error("Approved submissions fetch error:", err);
+    res.status(500).json({ message: "Failed to fetch approved submissions" });
   }
 });
 
@@ -732,191 +934,7 @@ app.get("/payments/:email", verifyJWT, async (req, res) => {
   }
 });
 
-   //workerhome//
-app.get("/worker-stats/:email", verifyJWT, verifyWorker, async (req, res) => {
-  try {
-    const { email } = req.params;
-    if (!email) {
-      return res.status(400).send({ message: "Email is required" });
-    }
-
-    const submissions = await submissionsCollection
-      .find({ worker_email: email })
-      .toArray();
-
-    const approved = submissions.filter((sub) => sub.status === "approved");
-    const pending = submissions.filter((sub) => sub.status === "pending");
-
-    const totalEarning = approved.reduce(
-      (sum, item) => sum + Number(item.payable_amount || 0),
-      0
-    );
-
-    res.send({
-      totalSubmissions: submissions.length,
-      totalPending: pending.length,
-      totalEarning,
-      approvedSubmissions: approved,
-    });
-  } catch (error) {
-    console.error("Worker stats error:", error);
-    res.status(500).send({ message: "Server error", error: error.message });
-  }
-});
-
-// GET tasklist task for worker
-app.get("/tasks", async (req, res) => {
-  try {
-    const {
-      taskType,
-      status,
-      maxAmount,
-      deadline,
-      sort = "deadline"
-    } = req.query;
-
-    const matchStage = {};
-
-    // Task Type filter
-    if (taskType) matchStage.task_type = taskType;
-
-    // Status filter
-    if (status) matchStage.status = status;
-
-    // Max Reward filter
-    if (maxAmount !== undefined && maxAmount !== "") {
-      matchStage.payable_amount = { $lte: Number(maxAmount) };
-    }
-
-    // Deadline filter
-    if (deadline) {
-      const selectedDate = new Date(deadline);
-      selectedDate.setHours(23, 59, 59, 999);
-      matchStage.completion_date = { $lte: selectedDate };
-    }
-
-    // Sorting
-    const sortStage = sort === "amount" ? { payable_amount: -1 } : { completion_date: 1 };
-
-    console.log("Match Stage:", matchStage); // DEBUG
-
-    // 🔴 FIX 1: db.collection("tasks") er jaygay tasksCollection use kora
-    const tasks = await tasksCollection
-      .aggregate([
-        { $match: matchStage },
-        { $sort: sortStage }
-      ])
-      .toArray();
-
-    res.send(tasks);
-
-  } catch (error) {
-    console.error("Filter error:", error);
-    res.status(500).send({ message: "Server error" });
-  }
-});
-
-// ================= SINGLE TASK (TaskDetails page) =================
-app.get("/tasks/:id", async (req, res) => {
-  try {
-
-    const id = req.params.id;
-
-    const task = await tasksCollection.findOne({
-      _id: new ObjectId(id)
-    });
-
-    if (!task) {
-      return res.status(404).send({ message: "Task not found" });
-    }
-
-    res.send(task);
-
-  } catch (error) {
-    res.status(500).send({ message: "Failed to load task", error });
-  }
-});
-
-
-app.post("/task-submit", verifyJWT, verifyWorker, async (req, res) => {
-  try {
-    const submission = req.body;
-    const taskObjectId = new ObjectId(submission.task_id);
-
-    // 1. Find task
-    const task = await tasksCollection.findOne({ _id: taskObjectId });
-
-    if (!task) {
-      return res.status(404).send({ message: "Task not found" });
-    }
-
-    // 2. Check task active
-    if (task.status !== "active") {
-      return res.status(400).send({ message: "This task is no longer active" });
-    }
-
-    //  FIX: Task full check (correct condition)
-    if (task.required_workers <= 0) {
-      return res.status(400).send({ message: "No workers needed for this task anymore" });
-    }
-
-    // 3. Check duplicate submission
-    const alreadySubmitted = await submissionsCollection.findOne({
-      task_id: taskObjectId,
-      worker_email: submission.worker_email,
-    });
-
-    if (alreadySubmitted) {
-      return res.status(400).send({ message: "You have already submitted this task" });
-    }
-
-    // 4. Create submission
-    await submissionsCollection.insertOne({
-      ...submission,
-      task_id: taskObjectId,
-      current_date: new Date(),
-      status: "pending",
-    });
-
-   // notification save
-await notificationsCollection.insertOne({
-  toEmail: submission.Buyer_email, 
-  message: `${submission.worker_name} submitted your task "${submission.task_title}"`,
-  type: "task_submission",
-  taskId: submission.task_id,
-  createdAt: new Date(),
-  read: false,
-});
-
-    // 5. Decrease worker count safely
-    const updatedTask = await tasksCollection.findOneAndUpdate(
-      {
-        _id: taskObjectId,
-        required_workers: { $gt: 0 },
-      },
-      {
-        $inc: { required_workers: -1 },
-        $set: { updatedAt: new Date() },
-      },
-      { returnDocument: "after" }
-    );
-
-    if (!updatedTask.value) {
-      return res.status(200).send({ message: "You have successfully submitted this task" });
-    }
-
-    //  SUCCESS MESSAGE (your requirement)
-    res.send({
-      success: true,
-      message: "You have successfully submitted this task",
-      workers_left: updatedTask.value.required_workers,
-    });
-
-  } catch (error) {
-    console.error("Task submission error:", error);
-    res.status(500).send({ message: "Server error while submitting task" });
-  }
-});
+  
 
 
 
@@ -1253,22 +1271,7 @@ app.delete("/tasks/:email", verifyJWT, verifyAdmin, async (req, res) => {
 });
 
 
-// GET /submissions/approved
-// Fetch all approved submissions with JWT authorization
-app.get("/submissions/approved", async (req, res) => {
-  try {
-    // Database theke shudhu status = "approved" er data-gulo search kora hocche
-    const approvedSubmissions = await submissionsCollection
-      .find({ status: "approved" })
-      .sort({ approvedAt: -1, current_date: -1 }) // Latest approved gulo prothome ashbe
-      .toArray();
 
-    res.status(200).json(approvedSubmissions);
-  } catch (err) {
-    console.error("Approved submissions fetch error:", err);
-    res.status(500).json({ message: "Failed to fetch approved submissions" });
-  }
-});
 // ======================
 app.listen(process.env.PORT, () => {
   console.log(`Server running on port ${process.env.PORT}`);
