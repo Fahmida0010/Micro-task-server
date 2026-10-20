@@ -50,7 +50,6 @@ Rules:
 - If asked about non-MicroTask issues, politely redirect them back to MicroTask platform guidance.
 `;
 
-// AI Support Endpoint
 app.post('/api/ai/chat', async (req, res) => {
   try {
     const { message, history } = req.body || {};
@@ -59,15 +58,14 @@ app.post('/api/ai/chat', async (req, res) => {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Format previous chat history if available
     const formattedHistory = (history || []).map(item => ({
       role: item.sender === 'user' ? 'user' : 'model',
       parts: [{ text: item.text }]
     }));
 
-    // MODEL NAME EKHANE CHANGE KORE "gemini-3.8-flash" BA "gemini-1.5-flash" DIN
+    // Official valid model name
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash', 
+      model: 'gemini-1.5-flash',
       contents: [
         ...formattedHistory,
         { role: 'user', parts: [{ text: message }] }
@@ -82,7 +80,11 @@ app.post('/api/ai/chat', async (req, res) => {
     res.json({ reply });
   } catch (error) {
     console.error('Error generating AI response:', error);
-    res.status(500).json({ error: 'Failed to process AI response' });
+    // Exact error message response-e pathan jate Postman-e karon dekha jay
+    res.status(500).json({ 
+      error: 'Failed to process AI response',
+      details: error.message 
+    });
   }
 });
 
