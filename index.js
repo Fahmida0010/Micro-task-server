@@ -53,7 +53,7 @@ Rules:
 // AI Support Endpoint
 app.post('/api/ai/chat', async (req, res) => {
   try {
-    const { message, history } = req.body;
+    const { message, history } = req.body || {};
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
